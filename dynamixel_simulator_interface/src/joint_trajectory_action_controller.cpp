@@ -72,6 +72,7 @@ namespace controller
 static const double ACCEPTABLE_BOUND = 0.05; // amount two positions can vary without being considered different positions.
 static const bool USE_ERROR_OUTPUT_LOG = false; // during trajectory execution, log the position and velcoty error
 
+  trajectory_msgs::JointTrajectory previous_traj;
 
 JointTrajectoryActionController::JointTrajectoryActionController()
 {
@@ -203,16 +204,47 @@ void JointTrajectoryActionController::updateState()
 }
 
 // Error check the trajectory then send it to the controllers
-void JointTrajectoryActionController::processTrajectory(const trajectory_msgs::JointTrajectory& traj_msg,
+void JointTrajectoryActionController::processTrajectory(const trajectory_msgs::JointTrajectory& orig_msg,
                                                         bool is_action)
 {
-  ROS_INFO_STREAM("\n inside process Trajectory with msg:\n" << traj_msg);
+  ROS_INFO_STREAM("\n inside process Trajectory with msg:\n" << orig_msg);
+
+  trajectory_msgs::JointTrajectory traj_msg = orig_msg;
   control_msgs::FollowJointTrajectoryResult traj_result;
   std::string error_msg;
+  bool found;
 
   int num_points = traj_msg.points.size();
 
   ROS_DEBUG("Received trajectory with %d points", num_points);
+
+  // fill in missing joints
+  // any missing joints will receive the same position
+  // as the last point in the previous message
+  // and a zero value for velocity and acceleration
+  if (!previous_traj.joint_names.empty()) {
+    for (size_t j = 0; j < previous_traj.joint_names.size(); ++j) {
+      found = false;
+      // see if this joint exists in the new message
+      for (size_t k = 0; k < traj_msg.joint_names.size() && !found; ++k) {
+        if (traj_msg.joint_names[k] == previous_traj.joint_names[j]) {
+          found = true;
+        }
+      }
+      if (!found) {
+        // copy joint name over
+        traj_msg.joint_names.push_back(previous_traj.joint_names[j]);
+        // copy joint position and zero out velocity and acceleration
+        for (size_t l = 0; l < num_points; ++l) {
+          traj_msg.points[l].positions.push_back(previous_traj.points[previous_traj.points.size()-1].positions[j]);
+          traj_msg.points[l].velocities.push_back(0);
+          traj_msg.points[l].accelerations.push_back(0);
+        }
+      }
+    }
+  }
+  ROS_INFO_STREAM("\n traj_msg is now:\n" << traj_msg);
+  previous_traj = traj_msg;
 
   // Maps from an index in joint_names_ to an index in the JointTrajectory msg "traj_msg"
   std::vector<int> lookup(num_joints_, -1);
@@ -369,15 +401,15 @@ void JointTrajectoryActionController::processTrajectory(const trajectory_msgs::J
     }
   }
   // Check if all the states were inside the position bounds
-  if( !outside_bounds )
-  {
-    // We can exit trajectory
-    traj_result.error_code = control_msgs::FollowJointTrajectoryResult::SUCCESSFUL;
-    error_msg = "Trajectory execution skipped because goal is same as current state";
-    ROS_INFO("%s", error_msg.c_str());
-    action_server_->setSucceeded(traj_result, error_msg);
-    return;
-  }
+  // if( !outside_bounds )
+  // {
+  //   // We can exit trajectory
+  //   traj_result.error_code = control_msgs::FollowJointTrajectoryResult::SUCCESSFUL;
+  //   error_msg = "Trajectory execution skipped because goal is same as current state";
+  //   ROS_INFO("%s", error_msg.c_str());
+  //   action_server_->setSucceeded(traj_result, error_msg);
+  //   return;
+  // }
 
   // Set the compliance margin and slope
   // TODO: move this to configuration file
